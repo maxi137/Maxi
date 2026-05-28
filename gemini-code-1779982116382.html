@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Vision: Gatos y Perros</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+    <style>
+        .glass { background: rgba(31, 41, 55, 0.7); backdrop-filter: blur(10px); }
+        .bounding-box { border: 2px solid #3b82f6; position: absolute; pointer-events: none; transition: all 0.2s; }
+        .label { background: #3b82f6; color: white; position: absolute; top: -20px; left: -2px; padding: 2px 8px; font-size: 11px; font-weight: bold; border-radius: 4px 4px 0 0; text-transform: uppercase; }
+        #canvas-wrapper { position: relative; display: inline-block; }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen flex flex-col font-sans">
+
+    <header class="p-4 border-b border-gray-700 flex justify-between items-center glass">
+        <div class="flex items-center gap-2">
+            <div id="status-icon" class="w-3 h-3 bg-yellow-500 rounded-full"></div>
+            <h1 class="text-xl font-bold">Neural<span class="text-blue-500">View</span></h1>
+        </div>
+        <div id="status" class="text-xs text-gray-400">Cargando cerebro...</div>
+    </header>
+
+    <main class="flex-1 flex flex-col items-center p-6 space-y-6">
+        
+        <div class="flex bg-gray-800 p-1 rounded-xl border border-gray-700">
+            <button id="mode-upload" class="px-6 py-2 rounded-lg bg-blue-600 text-white transition-all">Subir Imagen</button>
+            <button id="mode-camera" class="px-6 py-2 rounded-lg text-gray-400 hover:text-white transition-all">Cámara en Vivo</button>
+        </div>
+
+        <div id="view-container" class="relative bg-gray-800 p-2 rounded-2xl border border-gray-700 max-w-4xl w-full flex justify-center items-center overflow-hidden min-h-[400px]">
+            
+            <div id="upload-area" class="flex flex-col items-center justify-center border-2 border-dashed border-gray-600 rounded-xl p-12 w-full cursor-pointer hover:border-blue-500 transition-colors">
+                <svg class="w-12 h-12 text-gray-500 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                <p class="text-gray-400">Haz clic o arrastra una foto de tu mascota</p>
+                <input type="file" id="file-input" class="hidden" accept="image/*">
+            </div>
+
+            <video id="webcam" class="hidden w-full h-full object-cover rounded-xl" autoplay playsinline></video>
+
+            <div id="canvas-wrapper" class="hidden">
+                <img id="image-display" class="max-w-full h-auto rounded-xl">
+                <div id="box-container" class="absolute top-0 left-0 w-full h-full"></div>
+            </div>
+        </div>
+
+    </main>
+
+    <script>
+        const modeUpload = document.getElementById('mode-upload');
+        const modeCamera = document.getElementById('mode-camera');
+        const uploadArea = document.getElementById('upload-area');
+        const fileInput = document.getElementById('file-input');
+        const video = document.getElementById('webcam');
+        const imageDisplay = document.getElementById('image-display');
+        const canvasWrapper = document.getElementById('canvas-wrapper');
+        const boxContainer = document.getElementById('box-container');
+        const statusText = document.getElementById('status');
+        const statusIcon = document.getElementById('status-icon');
+
+        let model;
+        let currentMode = 'upload';
+
+        // Cargar Modelo
+        async function init() {
+            model = await cocoSsd.load();
+            statusText.innerText = "IA Lista";
+            statusIcon.className = "w-3 h-3 bg-green-500 rounded-full";
+        }
+
+        // Cambiar a modo Cámara
+        modeCamera.onclick = async () => {
+            currentMode = 'camera';
+            modeCamera.classList.add('bg-blue-600', 'text-white');
+            modeUpload.classList.remove('bg-blue-600', 'text-white');
+            uploadArea.classList.add('hidden');
+            canvasWrapper.classList.add('hidden');
+            video.classList.remove('hidden');
+            
+            const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+            video.srcObject = stream;
+            detectVideo();
+        };
+
+        // Cambiar a modo Upload
+        modeUpload.onclick = () => {
+            currentMode = 'upload';
+            modeUpload.classList.add('bg-blue-600', 'text-white');
+            modeCamera.classList.remove('bg-blue-600', 'text-white');
+            video.classList.add('hidden');
+            uploadArea.classList.remove('hidden');
+            if (video.srcObject) video.srcObject.getTracks().forEach(t => t.stop());
+        };
+
+        // Manejar subida de archivo
+        uploadArea.onclick = () => fileInput.click();
+        fileInput.onchange = (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (f) => {
+                imageDisplay.src = f.target.result;
+                canvasWrapper.classList.remove('hidden');
+                uploadArea.classList.add('hidden');
+                imageDisplay.onload = () => detectImage();
+            };
+            reader.readAsDataURL(file);
+        };
+
+        async function detectImage() {
+            boxContainer.innerHTML = "";
+            const predictions = await model.detect(imageDisplay);
+            drawBoxes(predictions);
+        }
+
+        async function detectVideo() {
+            if (currentMode !== 'camera') return;
+            const predictions = await model.detect(video);
+            
+            // Reutilizamos el boxContainer sobre el video
+            boxContainer.innerHTML = "";
+            canvasWrapper.classList.remove('hidden'); // Para ver los boxes
+            canvasWrapper.style.position = "absolute";
+            canvasWrapper.style.top = "0";
+            drawBoxes(predictions);
+            requestAnimationFrame(detectVideo);
+        }
+
+        function drawBoxes(predictions) {
+            predictions.forEach(p => {
+                if (p.class === 'dog' || p.class === 'cat') {
+                    const [x, y, w, h] = p.bbox;
+                    const box = document.createElement('div');
+                    box.className = 'bounding-box';
+                    box.style.left = `${x}px`; box.style.top = `${y}px`;
+                    box.style.width = `${w}px`; box.style.height = `${h}px`;
+                    
+                    const label = document.createElement('div');
+                    label.className = 'label';
+                    label.innerText = `${p.class === 'dog' ? 'Perro' : 'Gato'} ${Math.round(p.score * 100)}%`;
+                    
+                    box.appendChild(label);
+                    boxContainer.appendChild(box);
+                }
+            });
+        }
+
+        init();
+    </script>
+</body>
+</html>
